@@ -1,0 +1,57 @@
+# -*- coding: utf-8 -*-
+"""Group sensor readings by calendar week without copying any data.
+
+`group_by_week` returns {week_start: slice}, where each slice holds row
+positions into the master DataFrame. Because rows are time-sorted, every week
+is contiguous, so `df.iloc[sl]` gives a view of that week.
+"""
+
+import numpy as np
+import pandas as pd
+
+from optimised_data_import import data, TIME_COL
+
+_WEEKDAY = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
+
+
+def group_by_week(df, week_start_day="MON", time_col=TIME_COL):
+    """Maps each calendar week to a slice of row positions in `df`.
+
+    Args:
+        df: DataFrame sorted ascending by `time_col`, with no missing timestamps.
+        week_start_day: Day a week starts on, e.g. "MON" or "SUN".
+        time_col: Name of the timestamp column.
+
+    Returns:
+        Dict of week start (naive UTC Timestamp) -> slice of row positions.
+
+    Raises:
+        ValueError: If `time_col` is not sorted ascending.
+    """
+    ts = df[time_col]
+    if not ts.is_monotonic_increasing:
+        raise ValueError(f"'{time_col}' must be sorted ascending with no missing values")
+    if len(ts) == 0:
+        return {}
+
+    # Find the start date of the week each reading belongs to
+    naive = ts.dt.tz_localize(None) if ts.dt.tz is not None else ts
+    day = naive.dt.normalize()
+    offset = (day.dt.dayofweek - _WEEKDAY[week_start_day.upper()]) % 7
+    week_start = (day - pd.to_timedelta(offset, unit="D")).to_numpy()
+
+    # Sorted data => week_start is non-decreasing, so boundaries are where it changes.
+    cuts = np.flatnonzero(week_start[1:] != week_start[:-1]) + 1
+    starts = np.concatenate(([0], cuts))
+    stops = np.concatenate((cuts, [len(week_start)]))
+    return {pd.Timestamp(week_start[a]): slice(int(a), int(b))
+            for a, b in zip(starts, stops)}
+
+
+if __name__ == "__main__":
+    # Print the number of readings in each week
+    weekly = group_by_week(data)
+    counter = 1
+    for week, sl in weekly.items():
+        print(f"{counter}. {week.date()}: {sl.stop - sl.start} readings")
+        counter+=1
